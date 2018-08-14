@@ -1,18 +1,49 @@
-{{ define "proxy_to" }}{{ if .Address }}{{ if and .Container.Node.ID .Address.HostPort }}{{ .Container.Node.Address.IP }}:{{ .Address.HostPort }}{{ else }}{{ .Address.IP }}:{{ .Address.Port }}{{ end }}{{ else }}{{ .Container.IP }}{{ end }}{{ end }}
+{{ $hosts := groupByLabel $ "virtual.host" }}
 
-{{ range $host, $containers := groupByMulti $ "Env.VIRTUAL_HOST" "," }}
+{{ if not $hosts }}
+
+127.0.0.1:2015
+log stdout
+errors stderr
+
+{{ else }}
+
+{{ range $h, $containers := $hosts }}
+{{ $c := first $containers }}
+{{ $allhosts := trim (index $c.Labels "virtual.host") }}
+{{ range $t, $host := split $allhosts " " }}
+{{ $basicauth := trim (index $c.Labels "virtual.basicauth") }}
+{{ $basicauthPresent := ne $basicauth "" }}
+{{ $alias := trim (index $c.Labels "virtual.alias") }}
+{{ $aliasPresent := ne $alias "" }}
+{{ $tls := trim (index $c.Labels "virtual.tls") }}
+{{ $tlsPresent := ne $tls "" }}
+{{ $log := trim (index $c.Labels "virtual.log") }}
+{{ $logPresent := ne $log "" }}
+{{ $errors := trim (index $c.Labels "virtual.errors") }}
+{{ $errorsPresent := ne $errors "" }}
+
+{{ if $aliasPresent }}
+{{ $alias }} {
+  redir https://{{ $host }}
+}
+{{ end }}
 
 {{ $host }} {
-    tls {{ $.Env.LETSENCRYPT_EMAIL }}
-
-    proxy / {{ range $container := $containers }}{{ $addrLen := len $container.Addresses }}{{ if eq $addrLen 1 }}{{ $address := index $container.Addresses 0 }}{{ template "proxy_to" (dict "Container" $container "Address" $address) }}{{ else }}{{ $port := coalesce $container.Env.VIRTUAL_PORT "80" }}{{ $address := where $container.Addresses "Port" $port | first }}{{ template "proxy_to" (dict "Container" $container "Address" $address) }}{{ end }} {{ end }} {
-        proxy_header Host {host}
-        proxy_header X-Real-IP {remote}
-        proxy_header X-Forwarded-For {remote}
-        proxy_header X-Forwarded-Proto {scheme}
-    }
-    
-    log stdout
+  {{ range $i, $container := $containers }}
+  {{ $serviceName := index $container.Labels "com.docker.swarm.service.name" }}
+  {{ $port := index $container.Labels "virtual.port" }}
+  proxy / {{ trim $serviceName }}:{{ if $port }}{{ trim $port }}{{ else }}80{{ end }} {
+    transparent
+  }
+  tls {{ if $tlsPresent }}{{ $tls }}{{ else }}{{ $.Env.LETSENCRYPT_EMAIL }}{{ end }}
+  {{ if $basicauthPresent }}basicauth {{ $basicauth }}{{ end }}
+  log {{ if $logPresent }}{{ $log }}{{ else }}stdout{{ end }}
+  errors {{ if $errorsPresent }}{{ $errors }}{{ else }}stderr{{ end }}
+  {{ end }}
 }
+
+{{ end }}
+{{ end }}
 
 {{ end }}
